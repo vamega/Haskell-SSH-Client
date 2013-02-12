@@ -1,0 +1,14 @@
+name:                Haskell-SSH-Client
+version:             0.0
+stability:           alpha
+synopsis:            A haskell library that is a ssh client.
+license:             TBD
+license-file:        LICENSE
+author:              TBD
+maintainer:          TBD TBD <TBD@TBD.TBD>
+build-type:          Simple
+
+executable hssh
+  main-is: hssh.hs
+  hs-source-dirs: hssh
+  build-depends:       base

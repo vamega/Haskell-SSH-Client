@@ -18,7 +18,7 @@ library
                      binary,
                      transformers
   exposed-modules:   Network.SSH.Client,
-                     Network.SSH.Client.Transport
+                     Network.SSH.Transport
   ghc-options:       -Wall -O2
 
 executable hssh

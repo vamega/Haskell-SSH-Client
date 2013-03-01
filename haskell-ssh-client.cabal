@@ -15,12 +15,15 @@ library
                      pipes (>= 3.0.0),
                      bytestring,
                      network,
+                     binary,
                      transformers
-  exposed-modules:   Network.SSH.Client
-  ghc-options:       -Wall
+  exposed-modules:   Network.SSH.Client,
+                     Network.SSH.Client.Transport
+  ghc-options:       -Wall -O2
 
 executable hssh
   build-depends:     base
   main-is:           hssh.hs
   hs-source-dirs:    hssh,.
   other-modules:     Network.SSH.Client
+  ghc-options:       -Wall -O2

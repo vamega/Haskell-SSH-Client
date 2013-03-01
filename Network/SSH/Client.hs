@@ -29,10 +29,10 @@ sshClient host port = withSocketsDo $ do
                                     >-> P.putStrLnD
                                         >-> packToByteString
         packetPipeline pf = unpackFromPacket
-                                >-> P.putStrLnD
-                                    >-> pf
-                                        >-> P.putStrLnD
-                                            >-> packToPacket
+                            >-> P.putStrLnD
+                                >-> pf
+                                    >-> P.putStrLnD
+                                        >-> packToPacket
         runPacketPipeline pf h = runHandlePipeline (packetPipeline pf)  h
 
 

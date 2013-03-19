@@ -1,79 +1,120 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Network.SSH.Client (sshClient) where
 
+import Prelude
+import System.IO as IO
+import Network.Socket hiding (send, sendTo, recv, recvFrom)
+import Network.Socket.ByteString
+import qualified Data.ByteString.Char8 as BS
 import Control.Monad
 import Control.Applicative
 import Control.Monad.Trans.Class (lift)
-import Data.ByteString.Char8 as BS
 import Control.Proxy((>->))
 import qualified Control.Proxy as P
-import System.IO as IO
-import Network
-import Prelude
 import Network.SSH.Transport
 
-sshClient :: HostName -> Int -> IO ()
-sshClient host port = withSocketsDo $ do
-    h <- connectTo host (PortNumber $ fromIntegral port)
-    hSetBuffering h LineBuffering
+data SSHMode = HandShake | KeySwap
 
-    runHandlePipeline handshakePipeline h
-    runPacketPipeline sshKeyExchangeProxy h
+data SSHContext = SSHContext {
+    sshMode :: SSHMode
+}
 
-    hClose h
-    where
-        runHandlePipeline hf h =  P.runProxy $ hGetLineS h >-> hf >-> hPutD h
-        handshakePipeline = unpackFromByteString
-                            >-> P.putStrLnD
-                                >-> sshHandshakeProxy
-                                    >-> P.putStrLnD
-                                        >-> packToByteString
-        packetPipeline pf = unpackFromPacket
-                            >-> P.putStrLnD
-                                >-> pf
-                                    >-> P.putStrLnD
-                                        >-> packToPacket
-        runPacketPipeline pf h = runHandlePipeline (packetPipeline pf)  h
+type SocketDatum = [IO BS.ByteString]
+data SocketStreamFlag = Read | Write | Rewind
+data SocketPacketizeFlag = PacketizeAll | PacketizeNew | NoPackets
+
+data SocketContext = SocketContext {
+    socketReadDatum :: SocketDatum,
+    socketWriteDatum :: SocketDatum,
+    socketStream :: SocketStreamFlag,
+    socketPacketize :: SocketPacketizeFlag
+}
+
+sshClient :: HostName -> String -> IO ()
+sshClient hostname port = withSocketsDo $ do
+    addrinfos <- getAddrInfo Nothing (Just hostname) (Just port)
+    let serveraddr = head addrinfos
+    sock <- socket (addrFamily serveraddr) Stream defaultProtocol
+    setSocketOption sock KeepAlive 1
+    connect sock (addrAddress serveraddr)
+
+    let initSSHContext = SSHContext { sshMode = HandShake }
+    P.runProxy $ socketHandler sock 4096 >-> sshClientProxy initSSHContext
+
+    sClose sock
+
+sshHandShake :: String
+sshHandShake  = sshVersion ++ "\r\n"
+
+sshClientProxy :: (P.Proxy p) => SSHContext -> () -> P.Client p SocketContext SocketContext IO ()
+sshClientProxy context () = P.runIdentityP (clientLoop context) where
+    clientLoop context =  case sshMode context of
+                                HandShake -> handShake
+                                _ -> clientMain
+        where
+            handShake = do
+                let handShakeDatum = return $ BS.pack sshHandShake
+                let initSocketContext = SocketContext { socketReadDatum = [],
+                                                        socketWriteDatum = [handShakeDatum],
+                                                        socketStream = Write,
+                                                        socketPacketize = NoPackets }
+                isc <- P.request initSocketContext
+                rem_datum <- takeFullSplashPage isc
+                P.request $ isc { socketReadDatum = rem_datum, socketStream = Rewind}
+                clientLoop $ context { sshMode = KeySwap }
+                where
+                    takeFullSplashPage sc = do
+                        sc2 <- P.request $ (sc :: SocketContext) { socketStream = Read }
+                        spashBS <- lift $ head $ socketReadDatum (sc2 :: SocketContext)
+                        rem_datum <- lift $ printSSHSplashPage spashBS
+                        case rem_datum of
+                            [] -> takeFullSplashPage $ sc2 { socketReadDatum = [] }
+                            _ -> return rem_datum
+                    printSSHSplashPage :: BS.ByteString -> IO SocketDatum
+                    printSSHSplashPage bs = do
+                        let (splash,handShakeBegin) = case (BS.take 4 bs) == BS.pack "SSH-" of
+                                                        True  -> (BS.empty,bs)
+                                                        False -> BS.breakSubstring (BS.pack "\r\nSSH-") bs
+                        case (BS.length handShakeBegin) == (BS.length bs) of
+                            True -> BS.putStr "Server Handshake: "
+                                    >> BS.putStrLn handShakeBegin
+                                    >> return [return bs]
+                            False -> case (BS.length splash) == (BS.length bs)  of
+                                        True -> BS.putStrLn "Server Splash: "
+                                                >> BS.putStr splash
+                                                >> return []
+                                        False -> do
+                                                    BS.putStrLn splash
+                                                    let (serverHandShake,nonHandShake) = BS.breakSubstring (BS.pack "\r\n") (BS.drop 2 handShakeBegin)
+                                                    case (BS.length serverHandShake) == ((BS.length handShakeBegin) - 2) of
+                                                        True  -> BS.putStr "Server Handshake: "
+                                                                 >> BS.putStrLn serverHandShake
+                                                                 >> return [return (BS.drop 2 nonHandShake)]
+                                                        False -> error "Incorrect Server Handshake"
+
+            clientMain = do
+                return ()
 
 
-sshHandshakeProxy :: (P.Proxy p) => x -> p x String x String IO ()
-sshHandshakeProxy = P.mapMD $ \_ -> return $ sshVersion ++ "\r\n"
-
-
-unpackFromPacket :: (P.Proxy p) => x -> p x BS.ByteString x String IO ()
-unpackFromPacket =  P.mapD unpackPacket
-
-packToPacket :: (P.Proxy p) => x -> p x String x BS.ByteString IO ()
-packToPacket =  P.mapD packPacket
-
-sshKeyExchangeProxy :: (P.Proxy p) => x -> p x String x String IO ()
-sshKeyExchangeProxy = undefined
-
-
-sshClientReact :: String -> IO String
-sshClientReact bs = return $ sshVersion ++ "\r\n"
-
-sshClientProxy :: (P.Proxy p) => x -> p x String x String IO ()
-sshClientProxy = P.mapMD sshClientReact
-
--- | A 'Producer' that sends lines from a handle downstream as a bytestring
--- | Modified from https://github.com/Gabriel439/Haskell-Pipes-ByteString-Library/blob/master/Control/Proxy/ByteString.hs
-hGetLineS :: (P.Proxy p) => Handle -> () -> P.Producer p BS.ByteString IO ()
-hGetLineS h () = P.runIdentityP go where
-    go = do
-        eof <- lift $ IO.hIsEOF h
-        if eof
-            then return ()
-            else do
-                bs <- lift $ BS.hGetLine h
-                unless (BS.null bs) $ P.respond  bs >> go
-
--- | A proxy that sends an input bytestring into a handle
-hPutD :: (P.Proxy p) => Handle -> x -> p x BS.ByteString x BS.ByteString IO ()
-hPutD h =  P.useD (BS.hPut h)
-
-unpackFromByteString :: (P.Proxy p) => x -> p x BS.ByteString x String IO ()
-unpackFromByteString =  P.mapD BS.unpack
-
-packToByteString :: (P.Proxy p) => x -> p x String x BS.ByteString IO ()
-packToByteString =  P.mapD BS.pack
+socketHandler :: (P.Proxy p) => Socket -> Int -> SocketContext -> P.Server p SocketContext SocketContext IO ()
+socketHandler sock recvBufSize = P.runIdentityK socketLoop where
+    socketLoop isc = do
+        case (socketStream isc) of
+            Read ->   do
+                            let r = recv sock recvBufSize
+                            osc <- P.respond $ isc { socketReadDatum = r:(socketReadDatum isc) }
+                            socketLoop osc
+            Write ->  do
+                            case (socketWriteDatum isc) of
+                                [] -> P.respond isc >>= socketLoop
+                                wl -> do
+                                            w  <- lift $ head wl
+                                            lift $ sendAll sock w
+                                            osc <- P.respond $ isc { socketWriteDatum = [] }
+                                            socketLoop osc
+            Rewind -> do
+                            let osc = case (socketPacketize isc) of
+                                            PacketizeAll -> undefined
+                                            _ -> isc
+                            P.respond osc
+                            socketLoop osc

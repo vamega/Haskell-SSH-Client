@@ -9,7 +9,7 @@ main = do
     args <- getArgs
     print args
     case args of
-        [host, port] -> sshClient host (read port :: Int)
+        [host, port] -> sshClient host port
         _ -> usageExit
   where
     usageExit = do

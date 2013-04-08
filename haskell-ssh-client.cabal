@@ -12,11 +12,12 @@ build-type:          Simple
 
 library
   build-depends:     base,
-                     pipes (>= 3.0.0),
-                     bytestring,
+                     transformers,
+                     pipes (>= 3.2.0),
+                     attoparsec,
                      network,
-                     binary,
-                     transformers
+                     stringsearch,
+                     bytestring
   exposed-modules:   Network.SSH.Client,
                      Network.SSH.Transport
   ghc-options:       -Wall -O2
